@@ -1,0 +1,19 @@
+{
+  "name": "horizon-arcade",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Open-world arcade racing — Three.js, pushing for AAA web quality.",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview --host"
+  },
+  "dependencies": {
+    "lil-gui": "^0.20.0",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.10"
+  }
+}

@@ -1,0 +1,763 @@
+/**
+ * Menus — title, character select, pause and results.
+ *
+ * These are a *view* of `IRace.state`, never a driver of it: `state` is
+ * readonly on the interface and the race director owns it. Where a menu needs
+ * to act it calls the sanctioned commands (`start()` / `reset()` /
+ * `setPaused()`), and where the race director does not model a state we hold
+ * that screen locally instead of writing to it — `localTitle` / `localPause`
+ * are the fallbacks, not the primary path.
+ *
+ * `?ui=title|select|pause|results` forces a screen, for capture and review.
+ */
+import { RaceMode, RaceState, type Ctx, type IKart, type KartStats } from '../types';
+import { el, formatClock, ordinalSuffix, cssColor, clamp } from './uiUtil';
+import { ControlsMenu } from './ControlsMenu';
+
+/**
+ * Event modes offered on the select screen. Circuit is the adopted kart-royale
+ * race; Roam and Sprint are the Horizon layer. Kept as a string union rather
+ * than the numeric `RaceMode` so the UI never needs to know the enum values.
+ */
+export type ModeId = 'circuit' | 'roam' | 'sprint';
+
+const MODES: { id: ModeId; label: string; glyph: string }[] = [
+  { id: 'circuit', label: 'Circuit race', glyph: '🏁' },
+  { id: 'roam', label: 'Free roam', glyph: '🗺️' },
+  { id: 'sprint', label: 'Street sprint', glyph: '🚦' },
+];
+
+/**
+ * The mode a session was launched in — HUD reads it to adapt its chips.
+ *
+ * Derived from `race.mode`, not a side-table: during this feature's first
+ * verification pass, Vite served two live instances of this module (an HMR
+ * `?t=` copy and the plain one), and a WeakMap written through one import was
+ * invisible to the other — the game entered roam while the HUD still thought
+ * it was a circuit. `race.mode` is the single source of truth both sides
+ * already agree on, so read it straight off the contract object.
+ */
+export function currentMode(ctx: Ctx): ModeId {
+  switch (ctx.race.mode) {
+    case RaceMode.FreeRoam: return 'roam';
+    case RaceMode.Sprint: return 'sprint';
+    default: return 'circuit';
+  }
+}
+
+export type ScreenName = 'none' | 'title' | 'select' | 'pause' | 'results';
+
+/** Stat display ranges — the roster multipliers live inside these. */
+const STAT_RANGE: [number, number] = [0.74, 1.24];
+const STATS: { key: keyof KartStats; label: string }[] = [
+  { key: 'topSpeedMul', label: 'Speed' },
+  { key: 'accelMul', label: 'Accel' },
+  { key: 'handlingMul', label: 'Handling' },
+  { key: 'weightMul', label: 'Weight' },
+];
+
+const LOGO_SVG = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" class="kr-logo">
+  <defs>
+    <linearGradient id="krGold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#fffdf8"/>
+      <stop offset="32%"  stop-color="#ffc9ee"/>
+      <stop offset="58%"  stop-color="#ff5fd0"/>
+      <stop offset="82%"  stop-color="#c93af0"/>
+      <stop offset="100%" stop-color="#7a2ce0"/>
+    </linearGradient>
+    <linearGradient id="krCream" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#ffffff"/>
+      <stop offset="42%"  stop-color="#f3e4ff"/>
+      <stop offset="76%"  stop-color="#d9c2f5"/>
+      <stop offset="100%" stop-color="#a68cd6"/>
+    </linearGradient>
+    <linearGradient id="krSwoosh" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#22e3ff" stop-opacity="0"/>
+      <stop offset="30%"   stop-color="#4fb8ff" stop-opacity="0.95"/>
+      <stop offset="70%"   stop-color="#ff5fd0" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#ffc9ee" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="krBurst" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#ff8ae4" stop-opacity="0.55"/>
+      <stop offset="55%"  stop-color="#b44df0" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#7a2ce0" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="krCheck" width="24" height="24" patternUnits="userSpaceOnUse">
+      <rect width="24" height="24" fill="#f6efe0"/>
+      <rect width="12" height="12" fill="#181425"/>
+      <rect x="12" y="12" width="12" height="12" fill="#181425"/>
+    </pattern>
+    <!-- radial falloff so the sunburst dies away instead of hitting the
+         viewBox edge and drawing a rectangle -->
+    <radialGradient id="krFadeG" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="30%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </radialGradient>
+    <mask id="krFade" maskUnits="userSpaceOnUse" x="0" y="0" width="900" height="400">
+      <rect width="900" height="400" fill="url(#krFadeG)"/>
+    </mask>
+    <linearGradient id="krRibbonG" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#000000"/>
+      <stop offset="14%"  stop-color="#ffffff"/>
+      <stop offset="86%"  stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </linearGradient>
+    <mask id="krRibbon" maskUnits="userSpaceOnUse" x="60" y="240" width="790" height="130">
+      <rect x="60" y="240" width="790" height="130" fill="url(#krRibbonG)"/>
+    </mask>
+    <filter id="krDrop" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="9" stdDeviation="10" flood-color="#060a16" flood-opacity="0.62"/>
+    </filter>
+    <path id="krArc" d="M 196 224 Q 450 128 704 224" fill="none"/>
+  </defs>
+
+  <g mask="url(#krFade)">
+    <g class="kr-logo-rays" opacity="0.8">
+      RAYS
+    </g>
+  </g>
+  <ellipse cx="450" cy="200" rx="420" ry="200" fill="url(#krBurst)"/>
+
+  <g filter="url(#krDrop)" transform="rotate(-2.4 450 210)">
+    <!-- chequered banner, faded at both ends so it reads as a ribbon -->
+    <g mask="url(#krRibbon)" opacity="0.7">
+      <path d="M 104 292 L 800 266 L 795 320 L 99 346 Z" fill="url(#krCheck)"/>
+      <path d="M 104 292 L 800 266 L 795 320 L 99 346 Z" fill="none" stroke="#181425" stroke-width="4.5"/>
+    </g>
+
+    <text class="kr-logo-wm" font-size="104" letter-spacing="10"
+          fill="url(#krCream)" stroke="#181425" stroke-width="17"
+          paint-order="stroke" stroke-linejoin="round">
+      <textPath href="#krArc" startOffset="50%" text-anchor="middle">FESTIVAL</textPath>
+    </text>
+
+    <text class="kr-logo-wm" x="450" y="322" font-size="140" letter-spacing="4"
+          text-anchor="middle" fill="url(#krGold)" stroke="#181028" stroke-width="19"
+          paint-order="stroke" stroke-linejoin="round"
+          transform="skewX(-7) translate(39 0)">HORIZON</text>
+
+    <path d="M 118 358 Q 450 386 786 344" fill="none" stroke="url(#krSwoosh)"
+          stroke-width="11" stroke-linecap="round"/>
+  </g>
+</svg>`;
+
+function buildRays() {
+  let s = '';
+  for (let i = 0; i < 24; i += 2) {
+    const a0 = (i / 24) * Math.PI * 2;
+    const a1 = ((i + 0.85) / 24) * Math.PI * 2;
+    const R = 560;
+    const x0 = 450 + Math.cos(a0) * R, y0 = 200 + Math.sin(a0) * R * 0.62;
+    const x1 = 450 + Math.cos(a1) * R, y1 = 200 + Math.sin(a1) * R * 0.62;
+    s += `<path d="M450 200 L${x0.toFixed(1)} ${y0.toFixed(1)} L${x1.toFixed(1)} ${y1.toFixed(1)} Z" fill="#ff6ad5" opacity="0.11"/>`;
+  }
+  return s;
+}
+
+export class Menus {
+  /** The screen currently shown — HUD reads this to decide how to fade out. */
+  screen: ScreenName = 'none';
+  /** True while a full-screen menu owns the frame (HUD hides entirely). */
+  blocking = false;
+  /**
+   * Set by a tap on a blocking screen. Touch devices have no Enter key, and the
+   * title screen's only affordance was a keyboard hint — so a tap anywhere on
+   * the title, select or results screen counts as confirm.
+   */
+  private tapConfirm = false;
+
+  private root: HTMLDivElement;
+  private screens: Record<Exclude<ScreenName, 'none'>, HTMLDivElement>;
+  private ctx!: Ctx;
+  private forced: ScreenName | null = null;
+
+  /** Local pause, used when the race director does not model RaceState.Paused. */
+  private localPause = false;
+  private localTitle = false;
+
+  private selected = 0;
+  private cards: HTMLDivElement[] = [];
+  /** Event mode chosen on the select screen. */
+  private mode: ModeId = 'circuit';
+  private modeEl!: HTMLDivElement;
+  private modeButtons: HTMLDivElement[] = [];
+  private buttons: { pause: HTMLDivElement[]; results: HTMLDivElement[] } = { pause: [], results: [] };
+  private btnIndex = 0;
+
+  private prevSteer = 0;
+  private resultsBuilt = false;
+  /** How many karts were classified when the board was last built. */
+  private resultsFinished = -1;
+  private finishTimes = new Map<number, number>();
+  private lastRaceTime = 0;
+
+  /** the controls screen — its own overlay, not one of the four `screens` */
+  private controls: ControlsMenu;
+  /** title-screen copy follows the device actually in use; see `syncTouchCopy` */
+  private titlePrompt!: HTMLDivElement;
+  private titleHint!: HTMLDivElement;
+  private titleGlyphs!: HTMLDivElement;
+  private touchCopy: boolean | null = null;
+
+  private rosterEl!: HTMLDivElement;
+  private standingsEl!: HTMLDivElement;
+  /** the in-race running order, shown on the pause screen (see buildPause) */
+  private pauseOrderEl!: HTMLDivElement;
+  /** throttle on the pause board rebuild — it only changes when places do */
+  private pauseOrderKey = '';
+  private lapsEl!: HTMLDivElement;
+  private resultTitle!: HTMLDivElement;
+
+  constructor(parent: HTMLElement) {
+    this.root = el('div', 'kr-screens', parent);
+    // Sibling of `.kr-screens`, not a child: the tap-anywhere-confirm listener
+    // below is on `this.root`, and a tap on a SETTING must not also start the
+    // race. Its own listeners stop propagation before the touch pad sees it.
+    this.controls = new ControlsMenu(parent);
+    this.screens = {
+      title: this.buildTitle(),
+      select: this.buildSelect(),
+      pause: this.buildPause(),
+      results: this.buildResults(),
+    };
+    // one delegated listener rather than a handler per control
+    this.root.addEventListener('click', (e) => {
+      const t = e.target as HTMLElement;
+      if (t.closest('.kr-btn')) this.ui('confirm');
+      else if (t.closest('.kr-card')) this.ui('move');
+    });
+
+    // Tap-anywhere confirm. A real control that was tapped handles itself via
+    // its own click handler, so those are excluded to avoid confirming twice.
+    this.root.addEventListener('pointerdown', (e) => {
+      if (!this.blocking) return;
+      const t = e.target as HTMLElement;
+      if (t.closest('.kr-btn, .kr-card')) return;
+      this.tapConfirm = true;
+    });
+
+    const forced = new URLSearchParams(location.search).get('ui');
+    if (forced === 'title' || forced === 'select' || forced === 'pause' || forced === 'results') {
+      this.forced = forced;
+    }
+  }
+
+  init(ctx: Ctx) {
+    this.ctx = ctx;
+    // finish times are not on IRace, so we stamp them off the bus ourselves
+    ctx.bus.on((e) => {
+      if (e.type === 'finish') this.finishTimes.set(e.kart.id, ctx.race.raceTime);
+    });
+    this.fillRoster(ctx);
+    this.controls.attach(ctx);
+  }
+
+  // ------------------------------------------------------------------ frame
+
+  update(ctx: Ctx, _dt: number) {
+    const race = ctx.race;
+    const input = ctx.input.state;
+
+    // A race reset rewinds the clock; drop stale results so they rebuild.
+    if (race.raceTime < this.lastRaceTime - 0.25) {
+      this.resultsBuilt = false;
+      this.resultsFinished = -1;
+      this.finishTimes.clear();
+    }
+    this.lastRaceTime = race.raceTime;
+
+    // The title copy follows the device actually in use, and `input.touch` can
+    // flip mid-session (the iPadOS lazy mount, or a keyboard being pressed on a
+    // tablet). Cached on the value, so this is a compare per frame.
+    this.syncTouchCopy(ctx.input.touch);
+
+    // The controls screen owns input while it is up: it is a sibling overlay,
+    // not one of the four screens, so nothing below it may act on a confirm.
+    this.controls.update(ctx);
+    if (this.controls.open) {
+      this.tapConfirm = false;
+      this.prevSteer = input.steer;
+      return;
+    }
+
+    const inRace = race.state === RaceState.Racing || race.state === RaceState.Countdown;
+
+    // Confirm is `itemPressed` — Enter / Space / E / gamepad face button — which
+    // is what the on-screen hint actually promises. It used to read
+    // `pausePressed`, i.e. Escape or P alone, so the title screen said "PRESS
+    // ENTER TO START" and Enter did nothing at all.
+    //
+    // It is gated on a screen actually being up. Without that gate the same
+    // keypress that fires a shell also opens the pause menu, because with no
+    // screen showing `onConfirm` falls through to its pause branch.
+    if (this.screen !== 'none') {
+      if (input.itemPressed || this.tapConfirm) this.onConfirm(ctx, inRace);
+    } else if (input.pausePressed && inRace) {
+      this.localPause = true;
+      this.ui('pause');
+    }
+    this.tapConfirm = false;
+
+    // steer edges drive menu navigation on keyboard/gamepad
+    const st = input.steer;
+    if (st > 0.55 && this.prevSteer <= 0.55) this.nav(1);
+    else if (st < -0.55 && this.prevSteer >= -0.55) this.nav(-1);
+    this.prevSteer = st;
+
+    let want: ScreenName;
+    if (this.forced) want = this.forced;
+    else if (race.state === RaceState.Menu || this.localTitle) want = this.selecting ? 'select' : 'title';
+    else if (race.state === RaceState.Paused || this.localPause) want = 'pause';
+    else if (race.state === RaceState.Finished || race.state === RaceState.Results) want = 'results';
+    else want = 'none';
+
+    // The board is not final the moment it appears. It goes up `RESULTS_DELAY`
+    // after the *player* crosses, and on a three-lap race the field behind them
+    // is still running for up to half a minute. Building it once meant a
+    // winning player saw a classification frozen at their own crossing: every
+    // row below them ordered by distance-on-track, printing a metre gap instead
+    // of a finish time, and never corrected. Rebuild while anyone is still out
+    // there — `finishedCount` only moves 7 more times, so this is a handful of
+    // rebuilds, not a per-frame one.
+    if (want === 'results') {
+      const done = ctx.race.karts.reduce((n, k) => n + (k.finished ? 1 : 0), 0);
+      if (!this.resultsBuilt || done !== this.resultsFinished) {
+        this.resultsFinished = done;
+        this.fillResults(ctx);
+      }
+    } else if (want === 'pause') {
+      this.fillPauseOrder(ctx);
+    }
+
+    if (want !== this.screen) {
+      if (this.screen !== 'none') this.screens[this.screen].classList.remove('on');
+      if (want !== 'none') this.screens[want].classList.add('on');
+      this.screen = want;
+      this.btnIndex = 0;
+      this.syncButtons();
+    }
+    this.blocking = want === 'title' || want === 'select' || want === 'results';
+
+    // Inline, not stylesheet: the HUD layer sets `pointer-events: none` with
+    // enough specificity that an appended `.kr-screen.on` rule loses, and a
+    // blocking screen that cannot receive a tap is unstartable on a phone —
+    // there is no Enter key to fall back to. Inline always wins, and reverting
+    // to 'none' the moment the screen clears keeps the canvas clickable.
+    const pe = this.blocking ? 'auto' : 'none';
+    this.root.style.pointerEvents = pe;
+    // Clear the OUTGOING screen too. This used to only ever set the incoming
+    // one, so a screen that had been shown kept `pointer-events: auto` as an
+    // inline style — which outranks any stylesheet — for the rest of the
+    // session. Every `.kr-screen` stays displayed, so the title screen sat over
+    // the race as a live, invisible pointer target from the first frame on.
+    for (const name of Object.keys(this.screens) as ScreenName[]) {
+      const el = this.screens[name];
+      if (el) el.style.pointerEvents = name === want ? pe : 'none';
+    }
+
+    // Tell the touch layer a menu owns the screen. Without this the stick, the
+    // drift/brake cluster and the item button stay drawn over every menu — the
+    // results board shipped with a live DRIFT button on top of it and the item
+    // button sitting across the TOTAL row. Driving controls over a screen you
+    // cannot drive from are decoration at best and a mis-tap at worst.
+    //
+    // Signalled as an attribute rather than a direct call because `Menus` must
+    // not depend on `TouchControls`: the controls mount lazily, and on a
+    // browser that lies about being a desktop they may not exist yet when this
+    // first runs. CSS applies retroactively; a method call would have to be
+    // replayed. Same shape as the existing `html[data-touch]` HUD reflow.
+    if (want === 'none') delete document.documentElement.dataset.menu;
+    else document.documentElement.dataset.menu = want;
+  }
+
+  private selecting = false;
+
+  // ------------------------------------------------------------------ input
+
+  private nav(dir: number) {
+    if (this.screen === 'select') {
+      this.selected = (this.selected + dir + this.cards.length) % this.cards.length;
+      this.syncCards();
+    } else if (this.screen === 'pause' || this.screen === 'results') {
+      const list = this.screen === 'pause' ? this.buttons.pause : this.buttons.results;
+      this.btnIndex = (this.btnIndex + dir + list.length) % list.length;
+      this.syncButtons();
+    } else {
+      return;
+    }
+    this.ui('move');
+  }
+
+  /**
+   * Keyboard confirm routes through the same `click()` the mouse uses, so the
+   * 'confirm' SFX is emitted once, by the delegated listener in the ctor.
+   */
+  private onConfirm(ctx: Ctx, inRace: boolean) {
+    switch (this.screen) {
+      case 'title':
+        this.selecting = true;
+        this.ui('confirm');
+        return;
+      case 'select':
+        this.startRace(ctx);
+        this.ui('confirm');
+        return;
+      case 'pause':
+        this.buttons.pause[this.btnIndex]?.click();
+        return;
+      case 'results':
+        this.buttons.results[this.btnIndex]?.click();
+        return;
+      default:
+        if (inRace) { this.localPause = true; this.ui('pause'); }
+    }
+  }
+
+  /** Menu SFX hook — the audio system listens for these on the bus. */
+  private ui(name: string) {
+    this.ctx?.bus.emit({ type: 'ui', name });
+  }
+
+  private startRace(ctx: Ctx) {
+    this.forced = null;
+    this.localTitle = false;
+    this.selecting = false;
+    this.localPause = false;
+    this.resultsBuilt = false;
+    this.resultsFinished = -1;
+    this.finishTimes.clear();
+    // Hand the choice over BEFORE resetting. This line is the whole point of
+    // the select screen: without it `this.selected` only ever moved a CSS
+    // highlight, and every race was driven in kart 0 whatever was clicked.
+    ctx.race.selectKart(this.selected);
+    ctx.race.reset();
+  }
+
+  // ------------------------------------------------------------------ build
+
+  private makeScreen(cls: string) {
+    const s = el('div', 'kr-screen ' + cls, this.root);
+    el('div', 'kr-screen-in', s);
+    return s;
+  }
+
+  private buildTitle() {
+    const s = this.makeScreen('kr-s-title');
+    const inner = s.firstElementChild as HTMLDivElement;
+    const wrap = el('div', 'kr-stage', inner);
+    wrap.style.display = 'flex';
+    wrap.style.flexDirection = 'column';
+    wrap.style.alignItems = 'center';
+    wrap.innerHTML = LOGO_SVG.replace('RAYS', buildRays());
+    el('div', 'kr-sub', wrap, 'Sunset Bay Festival');
+    // Built empty; `syncTouchCopy` fills it from `ctx.input.touch` every time
+    // that flips. This used to run its OWN `matchMedia('(pointer: coarse)')`
+    // probe once, in the constructor — which is exactly the check that fails on
+    // the documented iPadOS "Request Desktop Website" case, where Safari claims
+    // `pointer: fine` and `maxTouchPoints: 0`. `Input` already handles that with
+    // a lazy capture-phase mount on the first real finger; the menu copy was
+    // never brought along, so an iPad in desktop mode got on-screen controls and
+    // the words "Press Enter to Start" above them.
+    this.titlePrompt = el('div', 'kr-prompt', wrap);
+    this.titleGlyphs = el('div', 'kr-glyphs', wrap);
+    this.titleHint = el('div', 'kr-hint', wrap);
+    const cbtn = el('div', 'kr-btn kr-btn-controls', wrap, 'Controls');
+    cbtn.onclick = (e) => { e.stopPropagation(); this.controls.show(); };
+    this.syncTouchCopy(false);
+    return s;
+  }
+
+  /**
+   * DEFECT D6. The only touch onboarding was one line of `kr-hint` at
+   * `clamp(9px, 1.4vmin, 18px)` — 1.4 vmin is 5.5 px on a 390-tall phone so it
+   * clamped to 9 px — at 44% opacity: 1.5 mm of glyph, NAMING controls without
+   * showing where any of them are, while the floating stick is invisible at
+   * rest. A first-run player had no visual evidence a steering control existed.
+   *
+   * On touch that line is replaced by three miniature renderings of the ACTUAL
+   * controls at their actual colours, each with one word beneath it at >= 14 px
+   * and full opacity. Same information; nothing to read. The breathing ghost
+   * stick in `TouchControls` is the other half of this, and it is on the frame
+   * the player is looking at rather than on a screen they are leaving.
+   */
+  private syncTouchCopy(touch: boolean) {
+    if (this.touchCopy === touch) return;
+    this.touchCopy = touch;
+    this.titlePrompt.textContent = touch ? 'Tap to Start' : 'Press Enter to Start';
+    if (touch) {
+      this.titleGlyphs.innerHTML =
+        '<div class="kr-gl"><span class="kr-gl-stick"><i></i><b></b></span>Steer</div>' +
+        '<div class="kr-gl"><span class="kr-gl-drift">DRIFT</span>Slide</div>' +
+        '<div class="kr-gl"><span class="kr-gl-item">+</span>Fire</div>';
+      this.titleHint.innerHTML = '';
+    } else {
+      this.titleGlyphs.innerHTML = '';
+      this.titleHint.innerHTML =
+        '<b>&#8592;</b><b>&#8594;</b> steer &nbsp;&nbsp; <b>&#8593;</b> accelerate &nbsp;&nbsp; ' +
+        '<b>Shift</b> drift &nbsp;&nbsp; <b>Space</b> item &nbsp;&nbsp; <b>Esc</b> pause';
+    }
+  }
+
+  private buildSelect() {
+    const s = this.makeScreen('kr-s-select');
+    const inner = s.firstElementChild as HTMLDivElement;
+    const head = el('div', 'kr-stage', inner);
+    el('div', 'kr-title kr-gold', head, 'Choose your car');
+    // Event-mode picker — the Horizon layer on top of the circuit race.
+    this.modeEl = el('div', 'kr-modes kr-stage', inner);
+    for (const m of MODES) {
+      const b = el('div', 'kr-btn kr-mode' + (m.id === this.mode ? ' sel' : ''), this.modeEl,
+        `${m.glyph} ${m.label}`);
+      b.onclick = () => { this.mode = m.id; this.syncModes(); this.ui('move'); };
+      this.modeButtons.push(b);
+    }
+    this.rosterEl = el('div', 'kr-roster kr-stage', inner);
+    const go = el('div', 'kr-menu-list kr-stage', inner);
+    const btn = el('div', 'kr-btn sel', go, 'Start event');
+    btn.onclick = () => this.launchSelected();
+    return s;
+  }
+
+  /** Launch whatever the picker has selected. */
+  private launchSelected() {
+    if (!this.ctx) return;
+    // Clear the menu-owned flags exactly as `startRace` does. Quit-to-title
+    // sets `localTitle` and never unsets it, so a roam/sprint launched from
+    // the select screen stayed pinned under it forever — race running, timer
+    // counting, screen blocked by an invisible select board. The circuit path
+    // never showed this because `startRace` clears the flags itself.
+    this.forced = null;
+    this.localTitle = false;
+    this.selecting = false;
+    this.localPause = false;
+    // The mode lives on the race itself (`race.mode`); no side-table needed —
+    // see `currentMode` for why a WeakMap here once broke the HUD.
+    if (this.mode === 'roam') this.ctx.race.startRoam();
+    else if (this.mode === 'sprint') this.ctx.race.startSprint();
+    else this.startRace(this.ctx);
+  }
+
+  private fillRoster(ctx: Ctx) {
+    const karts = ctx.race.karts;
+    this.rosterEl.textContent = '';
+    this.cards.length = 0;
+    karts.forEach((k, i) => {
+      const c = el('div', 'kr-card', this.rosterEl);
+      const col = cssColor(k.stats.color);
+      c.style.setProperty('--c', col);
+      const chip = el('div', 'kr-card-chip', c);
+      el('div', 'kr-card-init', chip, k.stats.name.charAt(0).toUpperCase());
+      if (k.isPlayer) el('div', 'kr-card-you', c, 'You');
+      el('div', 'kr-card-name', c, k.stats.name);
+      const stats = el('div', 'kr-stats', c);
+      for (const def of STATS) {
+        const row = el('div', 'kr-stat', stats);
+        el('span', undefined, row, def.label);
+        const bar = el('div', 'kr-bar', row);
+        const raw = k.stats[def.key] as number;
+        const v = clamp((raw - STAT_RANGE[0]) / (STAT_RANGE[1] - STAT_RANGE[0]), 0.08, 1);
+        const fill = el('i', undefined, bar);
+        // staggered so the bars cascade rather than snapping in together
+        fill.style.setProperty('--v', (v * 100).toFixed(1) + '%');
+        fill.style.transitionDelay = (0.12 + i * 0.04 + STATS.indexOf(def) * 0.06).toFixed(2) + 's';
+      }
+      c.onclick = () => { this.selected = i; this.syncCards(); };
+      this.cards.push(c);
+    });
+    this.selected = karts.findIndex((k) => k.isPlayer);
+    if (this.selected < 0) this.selected = 0;
+    this.syncCards();
+  }
+
+  private syncCards() {
+    for (let i = 0; i < this.cards.length; i++) {
+      this.cards[i].classList.toggle('sel', i === this.selected);
+    }
+  }
+
+  /** Mirror `this.mode` onto the picker buttons. */
+  private syncModes() {
+    for (let i = 0; i < this.modeButtons.length; i++) {
+      this.modeButtons[i].classList.toggle('sel', MODES[i].id === this.mode);
+    }
+  }
+
+  /**
+   * Pause. ROUND 8: this screen now carries the full running order.
+   *
+   * The eight-driver order used to be a permanent 200x320 timing tower pinned
+   * to the right-centre of the in-race HUD — the largest single element on
+   * screen, sitting on the outside of every right-hand corner, occluding the
+   * rivals it was describing. It belongs here and on the results screen, where
+   * the race is stopped and eight rows are actually readable. Same rows, same
+   * type, same rules as the results board: one standings object in the game.
+   */
+  private buildPause() {
+    const s = this.makeScreen('kr-s-pause');
+    const inner = s.firstElementChild as HTMLDivElement;
+    const box = el('div', 'kr-stage', inner);
+    box.style.display = 'flex';
+    box.style.flexDirection = 'column';
+    box.style.alignItems = 'center';
+    box.style.width = '100%';
+    el('div', 'kr-pause-badge', box, 'Race suspended');
+    el('div', 'kr-title kr-gold', box, 'Paused');
+
+    const grid = el('div', 'kr-pause-grid', box);
+    const left = el('div', undefined, grid);
+    el('div', 'kr-order-title', left, 'Running order');
+    this.pauseOrderEl = el('div', 'kr-standings', left);
+    const right = el('div', undefined, grid) as HTMLDivElement;
+    right.style.display = 'flex';
+    right.style.flexDirection = 'column';
+    right.style.justifyContent = 'center';
+    right.style.height = '100%';
+    const list = el('div', 'kr-menu-list', right);
+
+    const resume = el('div', 'kr-btn', list, 'Resume');
+    // Clearing `localPause` alone is not enough: on a real race the director
+    // owns the pause and `race.state` is `Paused`, which keeps `want` pinned to
+    // this screen no matter what the UI's own flag says. Resume has to tell the
+    // director too, or the button does nothing — which is exactly what it did.
+    resume.onclick = () => {
+      this.localPause = false;
+      this.forced = null;
+      this.ctx?.race.setPaused(false);
+    };
+    // Reachable MID-RACE, deliberately. `setScheme` releases every pointer and
+    // zeroes the command and never touches `IRace`, so a player who cannot
+    // steer can fix that without abandoning the race they are in.
+    const ctrl = el('div', 'kr-btn', list, 'Controls');
+    ctrl.onclick = () => this.controls.show();
+    const restart = el('div', 'kr-btn', list, 'Restart race');
+    restart.onclick = () => { this.localPause = false; this.forced = null; this.startRace(this.ctx); };
+    const quit = el('div', 'kr-btn', list, 'Quit to title');
+    quit.onclick = () => {
+      this.localPause = false;
+      this.forced = null;
+      this.localTitle = true;
+      this.selecting = false;
+      this.ctx.race.reset();
+    };
+    this.buttons.pause = [resume, ctrl, restart, quit];
+    return s;
+  }
+
+  private buildResults() {
+    const s = this.makeScreen('kr-s-results');
+    const inner = s.firstElementChild as HTMLDivElement;
+    this.resultTitle = el('div', 'kr-title kr-gold kr-stage', inner, 'Race complete');
+    const grid = el('div', 'kr-results-grid kr-stage', inner);
+    this.standingsEl = el('div', 'kr-standings', grid);
+    const right = el('div', undefined, grid) as HTMLDivElement;
+    right.style.display = 'flex';
+    right.style.flexDirection = 'column';
+    this.lapsEl = el('div', 'kr-laps', right);
+
+    const list = el('div', 'kr-menu-list kr-stage', inner);
+    const again = el('div', 'kr-btn', list, 'Race again');
+    again.onclick = () => this.startRace(this.ctx);
+    const title = el('div', 'kr-btn', list, 'Back to title');
+    title.onclick = () => { this.localTitle = true; this.selecting = false; this.forced = null; this.ctx.race.reset(); };
+    this.buttons.results = [again, title];
+    return s;
+  }
+
+  private syncButtons() {
+    const list = this.screen === 'pause' ? this.buttons.pause
+      : this.screen === 'results' ? this.buttons.results : null;
+    for (const group of [this.buttons.pause, this.buttons.results]) {
+      for (let i = 0; i < group.length; i++) {
+        group[i].classList.toggle('sel', group === list && i === this.btnIndex);
+      }
+    }
+  }
+
+  /**
+   * The running order, on the pause screen. Rebuilt only when the order (or
+   * the lap the leader is on) actually changes — the pause screen is static
+   * and a per-frame rebuild of eight rows would be eight allocations a frame
+   * for nothing.
+   */
+  private fillPauseOrder(ctx: Ctx) {
+    const race = ctx.race;
+    const player = race.player;
+    const order: IKart[] = race.standings.length ? race.standings : race.karts;
+
+    let key = '';
+    for (let i = 0; i < order.length; i++) key += order[i].id + ':' + order[i].lap + '|';
+    if (key === this.pauseOrderKey) return;
+    this.pauseOrderKey = key;
+
+    // Rebuilt rows must not re-deal the entrance animation on every reorder.
+    this.pauseOrderEl.classList.add('settled');
+    this.pauseOrderEl.textContent = '';
+    order.forEach((k, i) => {
+      const row = el('div', 'kr-row' + (k === player ? ' you' : ''), this.pauseOrderEl);
+      row.style.setProperty('--c', cssColor(k.stats.color));
+      const p = el('div', 'kr-row-p', row);
+      p.innerHTML = `${i + 1}<sup>${ordinalSuffix(i + 1)}</sup>`;
+      el('div', 'kr-row-c', row);
+      // Full names, never truncated: the roster's longest name is authored and
+      // the row is sized for it. `text-overflow: ellipsis` on content whose
+      // maximum length you control is the loudest "unfinished" tell there is,
+      // and the old in-race tower shipped "BRAMB…" and "MARLO…" in all ten
+      // review frames.
+      el('div', 'kr-row-n', row, k.stats.name);
+      el('div', 'kr-row-t', row, `Lap ${clamp(k.lap + 1, 1, race.totalLaps)}/${race.totalLaps}`);
+    });
+  }
+
+  private fillResults(ctx: Ctx) {
+    // Second and subsequent builds land on a board the player is already
+    // reading; only the first one gets the staggered entrance.
+    this.standingsEl.classList.toggle('settled', this.resultsBuilt);
+    this.resultsBuilt = true;
+    const race = ctx.race;
+    const player = race.player;
+    const order: IKart[] = race.standings.length ? race.standings : race.karts;
+
+    const place = player ? player.place : 1;
+    this.resultTitle.textContent =
+      place === 1 ? 'Winner' : `${place}${ordinalSuffix(place)} place`;
+
+    this.standingsEl.textContent = '';
+    order.forEach((k, i) => {
+      const row = el('div', 'kr-row' + (k === player ? ' you' : ''), this.standingsEl);
+      row.style.setProperty('--c', cssColor(k.stats.color));
+      row.style.setProperty('--d', (0.14 + i * 0.055).toFixed(3) + 's');
+      const p = el('div', 'kr-row-p', row);
+      p.innerHTML = `${i + 1}<sup>${ordinalSuffix(i + 1)}</sup>`;
+      el('div', 'kr-row-c', row);
+      el('div', 'kr-row-n', row, k.stats.name);
+      const t = this.finishTimes.get(k.id);
+      const gap = player ? k.raceDistance - player.raceDistance : 0;
+      el('div', 'kr-row-t', row,
+        t !== undefined ? formatClock(t)
+          : k === player ? formatClock(race.raceTime)
+            : `${gap >= 0 ? '+' : '−'}${Math.abs(Math.round(gap))} m`);
+    });
+
+    // lap times + best-lap callout
+    this.lapsEl.textContent = '';
+    const laps = race.lapTimes;
+    let best = -1;
+    for (let i = 0; i < laps.length; i++) if (best < 0 || laps[i] < laps[best]) best = i;
+
+    const callout = el('div', 'kr-best', this.lapsEl);
+    el('b', undefined, callout, 'Best lap');
+    el('em', undefined, callout, best >= 0 ? formatClock(laps[best], 3) : '—:—.———');
+
+    for (let i = 0; i < race.totalLaps; i++) {
+      const line = el('div', 'kr-lapline' + (i === best ? ' best' : ''), this.lapsEl);
+      el('b', undefined, line, `Lap ${i + 1}`);
+      el('em', undefined, line, i < laps.length ? formatClock(laps[i], 3) : '—');
+    }
+    const total = el('div', 'kr-lapline kr-lapline-total', this.lapsEl);
+    el('b', undefined, total, 'Total');
+    el('em', undefined, total,
+      formatClock(player ? (this.finishTimes.get(player.id) ?? race.raceTime) : race.raceTime, 3));
+  }
+}

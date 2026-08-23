@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#0a0d12" />
+    <title>Horizon — Open World Arcade</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #05070a; }
+      body {
+        font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        color: #f4f6fb;
+        -webkit-font-smoothing: antialiased;
+        cursor: default;
+        user-select: none;
+      }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; }
+      #loading {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 18px;
+        background: radial-gradient(circle at 50% 40%, #141b27 0%, #05070a 70%);
+        z-index: 100; transition: opacity .8s ease;
+      }
+      #loading h1 { font-size: 42px; font-weight: 800; letter-spacing: 2px;
+        background: linear-gradient(90deg,#ffb347,#ff5e62,#7a5cff); -webkit-background-clip: text;
+        background-clip: text; color: transparent; }
+      #loading p { color: #8a93a6; font-size: 14px; letter-spacing: 1px; text-transform: uppercase; }
+      .bar { width: 260px; height: 4px; background: #1b2230; border-radius: 99px; overflow: hidden; }
+      .bar > i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg,#ff5e62,#ffb347);
+        transition: width .3s ease; }
+      #loading.hidden { opacity: 0; pointer-events: none; }
+      #hint {
+        position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+        font-size: 12px; letter-spacing: 1px; color: #cfd6e6; background: rgba(10,13,18,.55);
+        backdrop-filter: blur(8px); padding: 8px 16px; border-radius: 99px; border: 1px solid rgba(255,255,255,.08);
+        z-index: 50; opacity: 0; transition: opacity .6s ease;
+      }
+      #startOverlay {
+        position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 14px;
+        background: radial-gradient(circle at 50% 35%, rgba(20,27,40,.92) 0%, rgba(5,7,10,.96) 70%);
+        transition: opacity .5s ease;
+      }
+      #startOverlay h2 {
+        font-size: 28px; font-weight: 800; letter-spacing: 3px;
+        background: linear-gradient(90deg,#ffb347,#ff5e62,#7a5cff);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      #startOverlay p { color: #b8c4d8; font-size: 15px; max-width: 420px; text-align: center; line-height: 1.5; }
+      #startOverlay .cta {
+        margin-top: 8px; padding: 12px 28px; border-radius: 99px; font-weight: 700;
+        letter-spacing: 1px; font-size: 13px; color: #fff;
+        background: linear-gradient(90deg,#ff5e62,#ffb347); border: none; cursor: pointer;
+        box-shadow: 0 8px 32px rgba(255,94,98,.35);
+      }
+      #startOverlay.hidden { opacity: 0; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="loading">
+      <h1>HORIZON</h1>
+      <p>Building the world…</p>
+      <div class="bar"><i id="loadbar"></i></div>
+    </div>
+    <div id="hint">WASD drive · Space handbrake · Shift boost · C = camera · R = reset · M = mute</div>
+    <div id="startOverlay">
+      <h2>HORIZON FESTIVAL</h2>
+      <p>Pick an event. Road Race: open-world sprint with checkpoints + PR stunts (Speed Trap, Big Air, Drift Zone). Circuit: 3-lap closed-loop time trial on the festival loop. Freeroam: just drive, no timer.</p>
+      <button class="cta" type="button" id="startBtn">PRESS ENTER — ROAD RACE</button>
+      <button class="cta" type="button" id="circuitBtn" style="background:linear-gradient(90deg,#b14dff,#22e3ff);box-shadow:0 8px 32px rgba(177,77,255,.35)">CIRCUIT — 3 LAPS</button>
+      <button class="cta" type="button" id="freeroamBtn" style="background:linear-gradient(90deg,#2d8bff,#18c6ff);box-shadow:0 8px 32px rgba(45,139,255,.35)">FREEROAM (NO TIMER)</button>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

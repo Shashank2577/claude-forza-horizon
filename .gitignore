@@ -1,0 +1,21 @@
+node_modules/
+dist/
+shots/
+
+# camera-panel worktrees, removed when the winner lands
+.claude/worktrees/
+
+.DS_Store
+*.local
+.vercel
+
+# oh-my-claudecode orchestration state — local tooling, not game code
+.omc/
+
+# claude-mem / agent scratch
+.lavish/
+
+# screenshot galleries from verification harnesses — regenerable
+.shots/
+legacy-horizon-arcade/.shots/
+legacy-horizon-arcade/dist/
